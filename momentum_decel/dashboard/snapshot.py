@@ -17,27 +17,27 @@ def build_snapshot_table(frame: pl.DataFrame) -> Table:
     for column in (
         "Ticker",
         "State",
-        "slope_d_hi",
-        "slope_d_cl",
-        "R2_20",
-        "ER_15",
         "Composite",
-        "Delta_1d",
-        "Delta_5d",
+        "Inflect",
+        "Recover",
+        "Flat",
+        "Lead",
+        "RelStr",
+        "EMA",
     ):
         table.add_column(column, justify="right" if column not in {"Ticker", "State"} else "left")
 
     for row in latest.iter_rows(named=True):
         table.add_row(
             row["ticker"],
-            row.get("ema_state", "UNKNOWN"),
-            _fmt(row.get("slope_d_high")),
-            _fmt(row.get("slope_d_close")),
-            _fmt(row.get("ols_r2_20")),
-            _fmt(row.get("er_15")),
+            row.get("advanced_state") or row.get("ema_state") or "UNKNOWN",
             _fmt(row.get("momentum_quality")),
-            _fmt(row.get("momentum_quality_delta_1d"), signed=True),
-            _fmt(row.get("momentum_quality_delta_5d"), signed=True),
+            _fmt(row.get("inflection_score")),
+            _fmt(row.get("recovery_score")),
+            _fmt(row.get("flattening_score")),
+            _fmt(row.get("leadership_score")),
+            _fmt(row.get("rel_strength_score")),
+            row.get("ema_state", "UNKNOWN"),
         )
     return table
 
@@ -57,4 +57,3 @@ def _fmt(value: object, signed: bool = False) -> str:
     if signed:
         return f"{float(value):+0.3f}"
     return f"{float(value):0.3f}"
-

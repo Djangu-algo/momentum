@@ -22,11 +22,11 @@ def build_single_instrument_dashboard(frame: pl.DataFrame, ticker: str) -> go.Fi
     slope_close_limit = float(max(abs(data["slope_d_close"]).max(skipna=True), 0.1))
 
     figure = make_subplots(
-        rows=8,
+        rows=9,
         cols=1,
         shared_xaxes=True,
-        vertical_spacing=0.02,
-        row_heights=[0.32, 0.15, 0.04, 0.09, 0.09, 0.11, 0.10, 0.14],
+        vertical_spacing=0.018,
+        row_heights=[0.28, 0.13, 0.035, 0.075, 0.075, 0.095, 0.09, 0.09, 0.13],
         subplot_titles=(
             "Price and EMA125",
             "ATR-normalized OHLC distance",
@@ -35,7 +35,8 @@ def build_single_instrument_dashboard(frame: pl.DataFrame, ticker: str) -> go.Fi
             "Slope d_close and state",
             "Trend coherence and efficiency",
             "Curvature and Theil-Sen delta",
-            "Composite momentum quality",
+            "Relative strength versus SPY",
+            "Framework scores",
         ),
         specs=[
             [{}],
@@ -45,6 +46,7 @@ def build_single_instrument_dashboard(frame: pl.DataFrame, ticker: str) -> go.Fi
             [{"secondary_y": True}],
             [{}],
             [{"secondary_y": True}],
+            [{}],
             [{}],
         ],
     )
@@ -63,16 +65,7 @@ def build_single_instrument_dashboard(frame: pl.DataFrame, ticker: str) -> go.Fi
     )
     figure.add_trace(go.Scatter(x=data["date"], y=data["ema_125"], name="EMA125"), row=1, col=1)
 
-    figure.add_trace(
-        go.Scatter(
-            x=data["date"],
-            y=data["d_high"],
-            name="d_high",
-            line=dict(color="#1a9850", width=1.0),
-        ),
-        row=2,
-        col=1,
-    )
+    figure.add_trace(go.Scatter(x=data["date"], y=data["d_high"], name="d_high", line=dict(color="#1a9850", width=1.0)), row=2, col=1)
     figure.add_trace(
         go.Scatter(
             x=data["date"],
@@ -85,26 +78,8 @@ def build_single_instrument_dashboard(frame: pl.DataFrame, ticker: str) -> go.Fi
         row=2,
         col=1,
     )
-    figure.add_trace(
-        go.Scatter(
-            x=data["date"],
-            y=data["d_open"],
-            name="d_open",
-            line=dict(color="#4575b4", width=1.0, dash="dot"),
-        ),
-        row=2,
-        col=1,
-    )
-    figure.add_trace(
-        go.Scatter(
-            x=data["date"],
-            y=data["d_close"],
-            name="d_close",
-            line=dict(color="#313695", width=1.4),
-        ),
-        row=2,
-        col=1,
-    )
+    figure.add_trace(go.Scatter(x=data["date"], y=data["d_open"], name="d_open", line=dict(color="#4575b4", width=1.0, dash="dot")), row=2, col=1)
+    figure.add_trace(go.Scatter(x=data["date"], y=data["d_close"], name="d_close", line=dict(color="#313695", width=1.4)), row=2, col=1)
     figure.add_hline(y=0.0, line_width=1, line_color="#666666", opacity=0.5, row=2, col=1)
 
     figure.add_trace(go.Scatter(x=data["date"], y=data["slope_d_high"], name="slope_d_high"), row=4, col=1)
@@ -123,6 +98,19 @@ def build_single_instrument_dashboard(frame: pl.DataFrame, ticker: str) -> go.Fi
         col=1,
         secondary_y=True,
     )
+    if "advanced_state_code" in data.columns:
+        figure.add_trace(
+            go.Scatter(
+                x=data["date"],
+                y=data["advanced_state_code"],
+                name="advanced_state_code",
+                mode="markers",
+                marker=dict(size=4, symbol="diamond"),
+            ),
+            row=5,
+            col=1,
+            secondary_y=True,
+        )
     figure.add_hline(y=0.0, line_width=1, line_color="#666666", opacity=0.5, row=5, col=1)
 
     for column in ("ols_r2_20", "er_15"):
@@ -132,20 +120,22 @@ def build_single_instrument_dashboard(frame: pl.DataFrame, ticker: str) -> go.Fi
     if "curvature_c_30_z" in data.columns:
         figure.add_trace(go.Scatter(x=data["date"], y=data["curvature_c_30_z"], name="curvature_c_30_z"), row=7, col=1)
     if "delta_ts_15_5" in data.columns:
-        figure.add_trace(
-            go.Scatter(x=data["date"], y=data["delta_ts_15_5"], name="delta_ts_15_5"),
-            row=7,
-            col=1,
-            secondary_y=True,
-        )
+        figure.add_trace(go.Scatter(x=data["date"], y=data["delta_ts_15_5"], name="delta_ts_15_5"), row=7, col=1, secondary_y=True)
 
-    figure.add_trace(go.Scatter(x=data["date"], y=data["momentum_quality"], name="momentum_quality"), row=8, col=1)
-    figure.add_hrect(y0=0.0, y1=0.35, fillcolor="#d73027", opacity=0.15, line_width=0, row=8, col=1)
-    figure.add_hrect(y0=0.35, y1=0.65, fillcolor="#fee08b", opacity=0.18, line_width=0, row=8, col=1)
-    figure.add_hrect(y0=0.65, y1=1.0, fillcolor="#1a9850", opacity=0.12, line_width=0, row=8, col=1)
+    for column in ("rel_d_close", "rel_er_15", "rel_delta_ts_15_5"):
+        if column in data.columns:
+            figure.add_trace(go.Scatter(x=data["date"], y=data[column], name=column), row=8, col=1)
+    figure.add_hline(y=0.0, line_width=1, line_color="#666666", opacity=0.4, row=8, col=1)
+
+    for column in ("momentum_quality", "inflection_score", "recovery_score", "flattening_score", "leadership_score"):
+        if column in data.columns:
+            figure.add_trace(go.Scatter(x=data["date"], y=data[column], name=column), row=9, col=1)
+    figure.add_hrect(y0=0.0, y1=0.35, fillcolor="#d73027", opacity=0.15, line_width=0, row=9, col=1)
+    figure.add_hrect(y0=0.35, y1=0.65, fillcolor="#fee08b", opacity=0.18, line_width=0, row=9, col=1)
+    figure.add_hrect(y0=0.65, y1=1.0, fillcolor="#1a9850", opacity=0.12, line_width=0, row=9, col=1)
 
     figure.update_layout(
-        height=1800,
+        height=2050,
         title=f"{ticker} Momentum Deceleration Dashboard",
         template="plotly_white",
         hovermode="x unified",
@@ -164,7 +154,7 @@ def build_single_instrument_dashboard(frame: pl.DataFrame, ticker: str) -> go.Fi
                 dict(label="All", step="all"),
             ]
         ),
-        row=8,
+        row=9,
         col=1,
     )
 
@@ -174,15 +164,15 @@ def build_single_instrument_dashboard(frame: pl.DataFrame, ticker: str) -> go.Fi
     figure.update_yaxes(range=[-slope_high_limit, slope_high_limit], fixedrange=True, row=4, col=1)
     figure.update_yaxes(range=[-slope_close_limit, slope_close_limit], fixedrange=True, row=5, col=1)
     figure.update_yaxes(
-        range=[-0.25, 3.25],
+        range=[-0.25, 5.25],
         tickmode="array",
-        tickvals=[0, 1, 2, 3],
+        tickvals=[0, 1, 2, 3, 4, 5],
         fixedrange=True,
         row=5,
         col=1,
         secondary_y=True,
     )
-    for row in (6, 8):
+    for row in (6, 8, 9):
         figure.update_yaxes(fixedrange=True, row=row, col=1)
     figure.update_yaxes(fixedrange=True, row=7, col=1)
     figure.update_yaxes(fixedrange=True, row=7, col=1, secondary_y=True)

@@ -51,7 +51,7 @@ class IndicatorConfig:
 @dataclass(slots=True)
 class RuntimeConfig:
     output_dir: Path = Path("output")
-    data_source: str = "yfinance"
+    data_source: str = "postgres"
     pg_dsn: str = DEFAULT_PG_DSN
     price_table: str = DEFAULT_PRICE_TABLE
     breadth_table: str = DEFAULT_BREADTH_TABLE
@@ -70,6 +70,14 @@ class RuntimeConfig:
         return self.output_dir / "breadth"
 
     @property
+    def groups_dir(self) -> Path:
+        return self.output_dir / "groups"
+
+    @property
+    def universe_dir(self) -> Path:
+        return self.output_dir / "universe"
+
+    @property
     def validation_dir(self) -> Path:
         return self.output_dir / "validation"
 
@@ -79,6 +87,8 @@ class RuntimeConfig:
             self.indicators_dir,
             self.charts_dir,
             self.breadth_dir,
+            self.groups_dir,
+            self.universe_dir,
             self.validation_dir,
         ):
             path.mkdir(parents=True, exist_ok=True)

@@ -156,6 +156,36 @@ def rolling_percentile_rank(values: Sequence[float], window: int) -> np.ndarray:
     return np.clip(out, 0.0, 1.0)
 
 
+def rolling_min(values: Sequence[float], window: int) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    out = np.full(arr.shape, np.nan, dtype=float)
+    if window <= 0 or arr.size < window:
+        return out
+    for idx in range(window - 1, arr.size):
+        win = arr[idx - window + 1 : idx + 1]
+        if np.isnan(win).all():
+            continue
+        out[idx] = np.nanmin(win)
+    return out
+
+
+def rolling_max(values: Sequence[float], window: int) -> np.ndarray:
+    arr = np.asarray(values, dtype=float)
+    out = np.full(arr.shape, np.nan, dtype=float)
+    if window <= 0 or arr.size < window:
+        return out
+    for idx in range(window - 1, arr.size):
+        win = arr[idx - window + 1 : idx + 1]
+        if np.isnan(win).all():
+            continue
+        out[idx] = np.nanmax(win)
+    return out
+
+
+def clip01(values: Sequence[float]) -> np.ndarray:
+    return np.clip(np.asarray(values, dtype=float), 0.0, 1.0)
+
+
 def rolling_hurst_rs(values: Sequence[float], window: int, lags: Iterable[int]) -> np.ndarray:
     arr = np.asarray(values, dtype=float)
     out = np.full(arr.shape, np.nan, dtype=float)
