@@ -11,6 +11,11 @@ load_dotenv()
 
 UNIVERSE = {
     "SPY": "Broad market",
+    "RSP": "S&P 500 Equal Weight",
+    "VONE": "Russell 1000",
+    "SPMO": "Momentum tilt",
+    "SPHB": "High beta",
+    "SPLV": "Low volatility",
     "XLK": "Technology",
     "XLF": "Financials",
     "XLE": "Energy",

@@ -39,11 +39,41 @@ python3 cli.py --data-source postgres snapshot --tickers SPY XLK XLF --start 202
 ```
 
 Generate a long-range interactive Plotly dashboard for one ticker.
-If `--start` is omitted, `dashboard` defaults to `2017-01-01`.
+If `--start` is omitted, `dashboard` uses the full available history for that ticker.
 
 ```bash
 python3 cli.py --data-source postgres dashboard --ticker SPY
 ```
+
+Generate a compact Discord-oriented PNG panel from another Python script:
+
+```python
+from pathlib import Path
+
+from momentum_decel.dashboard import (
+    generate_discord_panel_png,
+    save_discord_panel_png,
+    save_standard_discord_panels,
+)
+
+# defaults to the last 1 year of displayed bars
+artifact = generate_discord_panel_png("XLK")
+Path("xlk_discord.png").write_bytes(artifact.png_bytes)
+
+# explicitly save a 60-day panel
+save_discord_panel_png("SPMO", "output/charts/SPMO_discord_60d.png", display_days=60)
+
+# or save both the 1Y and 60D versions
+save_standard_discord_panels("SPHB", "output/charts")
+```
+
+The Discord panel uses:
+
+- top row: `close` line with `EMA125`
+- bottom row: `momentum_quality`, `inflection_score`, `recovery_score`, `flattening_score`, `leadership_score`
+- title: symbol plus ETF name/description
+- display window defaults to `1Y`
+- a helper is available to save both `1Y` and `60D` variants
 
 Generate a long-range interactive cross-sector heatmap.
 If `--start` is omitted, `heatmap` defaults to `2017-01-01`.
@@ -99,6 +129,7 @@ Output files:
 - `output/breadth/decel_breadth.parquet`
 
 Detailed field-by-field explanations live in `OUTPUTS.md`.
+Ratio and hit-rate formulas live in `RATIOS.md`.
 
 ## Notes
 

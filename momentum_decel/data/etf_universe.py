@@ -13,7 +13,11 @@ DEFAULT_CATEGORY_PATTERNS = ("sector", "industry")
 DEFAULT_MIN_AVERAGE_VOLUME = 250_000.0
 DEFAULT_MIN_AUM = 100_000_000.0
 DEFAULT_ALLOWED_EXCHANGES = ("NYSE", "AMEX", "NASDAQ", "CBOE")
+CORE_STYLE_ETFS = ("SPY", "RSP", "VONE", "SPMO", "SPHB", "SPLV")
 INDUSTRY_INFERENCE_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    (("high beta",), "High Beta"),
+    (("low volatility", "low vol", "minimum volatility", "min volatility"), "Low Volatility"),
+    (("momentum tilt", "momentum factor", "momentum"), "Momentum"),
     (("regional bank",), "Regional Banks"),
     (("bank", "banking"), "Banks"),
     (("insurance",), "Insurance"),
@@ -62,6 +66,7 @@ def load_sector_industry_etfs(
         "limit": limit,
         "min_average_volume": float(min_average_volume),
         "min_aum": float(min_aum),
+        "core_tickers": list(CORE_STYLE_ETFS),
     }
     for idx, pattern in enumerate(issuer_patterns):
         params[f"issuer_{idx}"] = f"%{pattern}%"
@@ -92,13 +97,23 @@ def load_sector_industry_etfs(
         from masterlist
         where scan_date = (select scan_date from latest)
           and ({exchange_clause})
-          and ({issuer_clause})
-          and ({category_clause})
           and lower(coalesce(asset_class, '')) like '%equit%'
           and lower(coalesce(leverage, 'non-leveraged')) = 'non-leveraged'
-          and coalesce(average_volume_10_day, 0) >= :min_average_volume
-          and coalesce(aum, 0) >= :min_aum
-        order by average_volume_10_day desc nulls last, aum desc nulls last, issuer, ticker
+          and (
+                upper(ticker) = any(:core_tickers)
+                or (
+                    ({issuer_clause})
+                    and ({category_clause})
+                    and coalesce(average_volume_10_day, 0) >= :min_average_volume
+                    and coalesce(aum, 0) >= :min_aum
+                )
+          )
+        order by
+            case when upper(ticker) = any(:core_tickers) then 0 else 1 end,
+            average_volume_10_day desc nulls last,
+            aum desc nulls last,
+            issuer,
+            ticker
         limit :limit
         """
     )
@@ -106,7 +121,7 @@ def load_sector_industry_etfs(
         rows = [dict(row._mapping) for row in conn.execute(query, params)]
     if not rows:
         return _empty_metadata_frame()
-    frame = _with_inferred_industry(pl.DataFrame(rows).with_columns(pl.col("scan_date").cast(pl.Date)))
+    frame = _cast_metadata_frame(_with_inferred_industry(pl.DataFrame(rows).with_columns(pl.col("scan_date").cast(pl.Date))))
     return _dedupe_latest_symbols(frame)
 
 
@@ -115,9 +130,26 @@ def load_etf_metadata(loader: DataLoader, tickers: Sequence[str]) -> pl.DataFram
         return _empty_metadata_frame()
     query = text(
         """
-        with latest as (
-            select max(scan_date) as scan_date
+        with ranked as (
+            select
+                ticker,
+                issuer,
+                category,
+                focus,
+                description,
+                exchange,
+                asset_class,
+                sector,
+                industry,
+                average_volume_10_day,
+                aum,
+                scan_date,
+                row_number() over (
+                    partition by upper(ticker)
+                    order by scan_date desc nulls last
+                ) as rn
             from masterlist
+            where upper(ticker) = any(:tickers)
         )
         select
             ticker,
@@ -132,9 +164,8 @@ def load_etf_metadata(loader: DataLoader, tickers: Sequence[str]) -> pl.DataFram
             average_volume_10_day,
             aum,
             scan_date
-        from masterlist
-        where scan_date = (select scan_date from latest)
-          and upper(ticker) = any(:tickers)
+        from ranked
+        where rn = 1
         order by issuer, ticker
         """
     )
@@ -142,28 +173,29 @@ def load_etf_metadata(loader: DataLoader, tickers: Sequence[str]) -> pl.DataFram
         rows = [dict(row._mapping) for row in conn.execute(query, {"tickers": [ticker.upper() for ticker in tickers]})]
     if not rows:
         return _empty_metadata_frame()
-    frame = _dedupe_latest_symbols(_with_inferred_industry(pl.DataFrame(rows).with_columns(pl.col("scan_date").cast(pl.Date))))
+    frame = _dedupe_latest_symbols(
+        _cast_metadata_frame(_with_inferred_industry(pl.DataFrame(rows).with_columns(pl.col("scan_date").cast(pl.Date))))
+    )
     requested = [ticker.upper() for ticker in tickers]
     present = set(frame["ticker"].to_list())
     missing = [ticker for ticker in requested if ticker not in present]
     if missing:
-        fallback = pl.DataFrame(
-            {
-                "ticker": missing,
-                "issuer": [None] * len(missing),
-                "category": [None] * len(missing),
-                "focus": [None] * len(missing),
-                "description": [None] * len(missing),
-                "exchange": [None] * len(missing),
-                "asset_class": [None] * len(missing),
-                "sector": [None] * len(missing),
-                "industry": [None] * len(missing),
-                "industry_inferred": [None] * len(missing),
-                "average_volume_10_day": [None] * len(missing),
-                "aum": [None] * len(missing),
-                "scan_date": [None] * len(missing),
-            },
-            schema=_empty_metadata_frame().schema,
+        fallback = (
+            pl.DataFrame({"ticker": missing})
+            .with_columns(
+                pl.lit(None).cast(pl.String).alias("issuer"),
+                pl.lit(None).cast(pl.String).alias("category"),
+                pl.lit(None).cast(pl.String).alias("focus"),
+                pl.lit(None).cast(pl.String).alias("description"),
+                pl.lit(None).cast(pl.String).alias("exchange"),
+                pl.lit(None).cast(pl.String).alias("asset_class"),
+                pl.lit(None).cast(pl.String).alias("sector"),
+                pl.lit(None).cast(pl.String).alias("industry"),
+                pl.lit(None).cast(pl.String).alias("industry_inferred"),
+                pl.lit(None).cast(pl.Float64).alias("average_volume_10_day"),
+                pl.lit(None).cast(pl.Float64).alias("aum"),
+                pl.lit(None).cast(pl.Date).alias("scan_date"),
+            )
         )
         frame = pl.concat([frame, fallback], how="diagonal")
     return frame.sort(["issuer", "ticker"], nulls_last=True)
@@ -244,3 +276,14 @@ def _clean_text(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _cast_metadata_frame(frame: pl.DataFrame) -> pl.DataFrame:
+    schema = _empty_metadata_frame().schema
+    expressions = []
+    for column, dtype in schema.items():
+        if column not in frame.columns:
+            expressions.append(pl.lit(None).cast(dtype).alias(column))
+        else:
+            expressions.append(pl.col(column).cast(dtype, strict=False).alias(column))
+    return frame.select(expressions)

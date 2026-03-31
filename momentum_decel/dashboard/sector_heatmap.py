@@ -13,6 +13,7 @@ def build_sector_heatmap(frame: pl.DataFrame) -> go.Figure:
         .sort("ticker")
     )
     dates = [column for column in pivot.columns if column != "ticker"]
+    x_dates = [str(column) for column in dates]
     z = pivot.select(dates).to_numpy()
     y = pivot["ticker"].to_list()
 
@@ -21,7 +22,7 @@ def build_sector_heatmap(frame: pl.DataFrame) -> go.Figure:
         [
             go.Heatmap(
                 z=z,
-                x=dates,
+                x=x_dates,
                 y=y,
                 colorscale=[
                     [0.0, "#a50026"],

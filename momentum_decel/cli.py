@@ -10,7 +10,11 @@ from momentum_decel.composite.leadership_score import add_leadership_score
 from momentum_decel.composite.scorer import add_composite_score
 from momentum_decel.config import DEFAULT_CHART_START, DEFAULT_TICKERS, IndicatorConfig, RuntimeConfig
 from momentum_decel.dashboard.sector_heatmap import build_sector_heatmap, save_heatmap
-from momentum_decel.dashboard.single_instrument import build_single_instrument_dashboard, save_dashboard
+from momentum_decel.dashboard.single_instrument import (
+    build_single_instrument_dashboard,
+    load_dashboard_validation_context,
+    save_dashboard,
+)
 from momentum_decel.dashboard.snapshot import print_snapshot
 from momentum_decel.data.etf_universe import (
     DEFAULT_CATEGORY_PATTERNS,
@@ -35,7 +39,7 @@ from momentum_decel.validation.group_relative_severity import (
 from momentum_decel.validation.recovery_study import build_recovery_study
 
 
-DEFAULT_STUDY_TICKERS = ("SPY",)
+DEFAULT_STUDY_TICKERS = ("SPY", "RSP", "VONE", "SPMO", "SPHB", "SPLV")
 GROUP_BY_CHOICES = ("focus", "issuer", "category", "exchange", "sector", "industry")
 
 
@@ -217,9 +221,13 @@ def run_snapshot(args: argparse.Namespace, config: RuntimeConfig) -> None:
 def run_dashboard(args: argparse.Namespace, config: RuntimeConfig) -> None:
     ticker = args.ticker.upper()
     loader = DataLoader(config)
-    combined = compute_for_tickers(loader, config, [ticker], args.start or DEFAULT_CHART_START, args.end)
+    combined = compute_for_tickers(loader, config, [ticker], args.start, args.end)
     ticker_frame = combined.filter(pl.col("ticker") == ticker).drop("ticker")
-    figure = build_single_instrument_dashboard(ticker_frame, ticker)
+    if ticker_frame.is_empty():
+        raise SystemExit(f"No price history found for {ticker} in {config.data_source} ({config.price_table}).")
+    metadata = load_etf_metadata(loader, [ticker]) if config.data_source == "postgres" else pl.DataFrame()
+    risk_context = load_dashboard_validation_context(ticker_frame, ticker, config.validation_dir, metadata)
+    figure = build_single_instrument_dashboard(ticker_frame, ticker, risk_context=risk_context)
     save_dashboard(
         figure,
         config.charts_dir / f"{ticker}_dashboard.html",

@@ -259,6 +259,61 @@ These columns convert raw indicators into comparable 0-to-1 style values.
 
 These are useful for comparison and future model refinement, but the current composite only uses the eight fields listed above.
 
+## Relative Strength Output Versus SPY
+
+These columns are calculated from the ratio series `ETF_close / SPY_close`.
+
+Base ratio fields:
+
+- `rel_close`: `close / spy_close`
+- `rel_ema_125`: EMA125 of `rel_close`
+- `rel_d_close`: `(rel_close - rel_ema_125) / rel_ema_125`
+
+Meaning:
+
+- Rising `rel_close` means the ticker is outperforming `SPY`.
+- Falling `rel_close` means the ticker is underperforming `SPY`.
+- Positive `rel_d_close` means the ratio is above its own relative EMA trend.
+
+Relative trend-quality fields:
+
+- `rel_ols_r2_20`: rolling `R^2` of the ratio series
+- `rel_er_15`: efficiency ratio of the ratio series
+- `rel_curvature_c_30`: quadratic curvature coefficient on the ratio series
+- `rel_curvature_c_30_ema5`: 5-day EMA of relative curvature
+- `rel_curvature_c_30_z`: rolling z-score of smoothed relative curvature
+- `rel_ts_slope_15`: Theil-Sen slope of the ratio series
+- `rel_delta_ts_15_5`: `rel_ts_slope_15[t] - rel_ts_slope_15[t-5]`
+
+Meaning:
+
+- Higher `rel_er_15` means cleaner relative outperformance.
+- Negative `rel_curvature_c_30_z` means the relative trend is becoming more concave / decelerating.
+- Negative `rel_delta_ts_15_5` means relative slope is flattening or worsening.
+
+Relative normalized fields:
+
+- `rel_norm_d_close`
+- `rel_norm_ols_r2_20`
+- `rel_norm_er_15`
+- `rel_norm_curvature_c_30_z`
+- `rel_norm_ts_slope_15`
+- `rel_norm_delta_ts_15_5`
+
+Relative composite:
+
+- `rel_strength_score`: equal-weight mean of the six normalized relative fields above
+
+Important special case for `SPY`:
+
+- The relative-strength benchmark is `SPY` itself.
+- So for `SPY`, the ratio series is intentionally a placeholder:
+  - `rel_close = 1.0`
+  - `rel_d_close = 0.0`
+  - `rel_er_15 = 0.5`
+  - `rel_delta_ts_15_5 = 0.0`
+- Therefore the relative-strength row in the `SPY` dashboard is expected to look flat.
+
 ## Composite Output
 
 - `momentum_quality`
@@ -298,16 +353,27 @@ This is the interactive Plotly dashboard for one ticker.
 Panels:
 
 - Panel 1: candlestick price with `ema_125`
-- Panel 2: `d_high`, `d_close`, `d_low`
-- Panel 3: `slope_d_high`, `slope_d_close`, `ema_state_code`
-- Panel 4: `ols_r2_20`, `er_15`
-- Panel 5: `curvature_c_30_z`, `delta_ts_15_5`
-- Panel 6: `momentum_quality`
+- Panel 2: ATR-normalized OHLC distance
+  - `d_high`, `d_low`, `d_open`, `d_close`
+- Panel 3: spacer row for readability
+- Panel 4: `slope_d_high`
+- Panel 5: `slope_d_close`, `ema_state_code`, `advanced_state_code`
+- Panel 6: `ols_r2_20`, `er_15`
+- Panel 7: `curvature_c_30_z`, `delta_ts_15_5`
+- Panel 8: relative-strength row versus `SPY`
+  - `rel_d_close`, `rel_er_15`, `rel_delta_ts_15_5`
+- Panel 9: framework scores
+  - `momentum_quality`, `inflection_score`, `recovery_score`, `flattening_score`, `leadership_score`
+- Panel 10: validation risk / recovery hit-rate row
+  - `DD8/20`, `DD8/40`, `DD10/40`, `UP10/40`
 
 Meaning:
 
 - This is the best output for visually examining how the indicators line up through time.
 - The HTML graph supports zooming, panning, a range slider, and range selector buttons.
+- The relative-strength row is only informative for non-benchmark tickers.
+- For `SPY`, the relative-strength row is intentionally flat because it is measured versus itself.
+- The bottom validation row uses historical study hit rates rather than raw indicator values.
 
 ## `output/charts/sector_heatmap.html`
 
