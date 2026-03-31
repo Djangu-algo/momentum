@@ -18,6 +18,8 @@ EXHAUSTION_SIGNAL_COLUMNS = (
     "flattening_score",
     "advanced_state_code",
 )
+FORWARD_HORIZONS = (5, 10, 20, 40)
+DRAWDOWN_SEVERITY_THRESHOLDS = (0.05, 0.08, 0.10)
 
 
 def build_exhaustion_study(
@@ -39,6 +41,7 @@ def build_exhaustion_study(
 
     peak_indices = [event.peak_idx for event in events]
     detail_rows: list[dict[str, object]] = []
+    low = ordered["low"].to_numpy() if "low" in ordered.columns else ordered["close"].to_numpy()
     summary_rows: list[dict[str, object]] = []
 
     for signal_name, signal_values, mask in _warning_signal_series(ordered).values():
@@ -49,6 +52,7 @@ def build_exhaustion_study(
             events=events,
             peak_indices=peak_indices,
             ordered=ordered,
+            low=low,
             lookback_days=lookback_days,
             warning_horizon=warning_horizon,
         )
@@ -58,7 +62,6 @@ def build_exhaustion_study(
                 rows=warning_rows,
                 mask=mask,
                 signal_name=signal_name,
-                signal_values=signal_values,
                 peak_indices=peak_indices,
                 warning_horizon=warning_horizon,
             )
@@ -97,6 +100,7 @@ def _build_warning_rows(
     events: list[object],
     peak_indices: list[int],
     ordered: pl.DataFrame,
+    low: np.ndarray,
     lookback_days: int,
     warning_horizon: int,
 ) -> list[dict[str, object]]:
@@ -125,6 +129,16 @@ def _build_warning_rows(
             "post_peak_close_return_20d": _forward_return(close, peak_idx, 20),
             "post_peak_close_return_40d": _forward_return(close, peak_idx, 40),
         }
+        for horizon in FORWARD_HORIZONS:
+            row[f"forward_return_{horizon}d"] = _forward_return(close, warning_idx, horizon)
+            row[f"forward_min_close_return_{horizon}d"] = _min_forward_return(close, warning_idx, horizon)
+            row[f"max_adverse_excursion_{horizon}d"] = _max_adverse_excursion(low, close, warning_idx, horizon)
+        for threshold in DRAWDOWN_SEVERITY_THRESHOLDS:
+            for horizon in FORWARD_HORIZONS:
+                row[f"drawdown_hit_{int(threshold * 100)}pct_{horizon}d"] = _drawdown_hit(
+                    row[f"max_adverse_excursion_{horizon}d"],
+                    threshold,
+                )
         rows.append(row)
     return rows
 
@@ -133,7 +147,6 @@ def _summarize_warning_signal(
     rows: list[dict[str, object]],
     mask: np.ndarray,
     signal_name: str,
-    signal_values: np.ndarray,
     peak_indices: list[int],
     warning_horizon: int,
 ) -> list[dict[str, object]]:
@@ -177,6 +190,20 @@ def _summarize_warning_signal(
                 ),
             }
         )
+        for horizon in FORWARD_HORIZONS:
+            summary_rows[-1][f"median_forward_return_{horizon}d"] = _nan_median(
+                [row[f"forward_return_{horizon}d"] for row in bucket_rows]
+            )
+            summary_rows[-1][f"median_forward_min_close_return_{horizon}d"] = _nan_median(
+                [row[f"forward_min_close_return_{horizon}d"] for row in bucket_rows]
+            )
+            summary_rows[-1][f"median_max_adverse_excursion_{horizon}d"] = _nan_median(
+                [row[f"max_adverse_excursion_{horizon}d"] for row in bucket_rows]
+            )
+        for threshold in DRAWDOWN_SEVERITY_THRESHOLDS:
+            for horizon in FORWARD_HORIZONS:
+                column = f"drawdown_hit_{int(threshold * 100)}pct_{horizon}d"
+                summary_rows[-1][column] = _nan_mean([_bool_to_float(row[column]) for row in bucket_rows])
     return summary_rows
 
 
@@ -209,10 +236,38 @@ def _bucket_values(signal_name: str, values: np.ndarray) -> list[str]:
 
 
 def _forward_return(close: np.ndarray, idx: int, horizon: int) -> float:
+    if idx is None:
+        return float("nan")
     future_idx = idx + horizon
     if future_idx >= len(close) or np.isnan(close[idx]) or np.isnan(close[future_idx]):
         return float("nan")
     return float((close[future_idx] / close[idx]) - 1.0)
+
+
+def _min_forward_return(close: np.ndarray, idx: int | None, horizon: int) -> float:
+    if idx is None:
+        return float("nan")
+    future = close[idx + 1 : min(len(close), idx + horizon + 1)]
+    future = future[~np.isnan(future)]
+    if future.size == 0 or np.isnan(close[idx]):
+        return float("nan")
+    return float((np.min(future) / close[idx]) - 1.0)
+
+
+def _max_adverse_excursion(low: np.ndarray, close: np.ndarray, idx: int | None, horizon: int) -> float:
+    if idx is None:
+        return float("nan")
+    future = low[idx + 1 : min(len(low), idx + horizon + 1)]
+    future = future[~np.isnan(future)]
+    if future.size == 0 or np.isnan(close[idx]):
+        return float("nan")
+    return float((np.min(future) / close[idx]) - 1.0)
+
+
+def _drawdown_hit(value: float, threshold: float) -> bool | None:
+    if np.isnan(value):
+        return None
+    return bool(value <= -threshold)
 
 
 def _nan_mean(values: list[object]) -> float | None:
@@ -223,6 +278,12 @@ def _nan_mean(values: list[object]) -> float | None:
     if valid.size == 0:
         return None
     return float(np.mean(valid))
+
+
+def _bool_to_float(value: object) -> float:
+    if value is None:
+        return float("nan")
+    return float(bool(value))
 
 
 def _nan_median(values: list[object]) -> float | None:
@@ -248,7 +309,7 @@ def _frame_from_rows(rows: list[dict[str, object]], schema: dict[str, pl.DataTyp
 
 
 def _empty_detail_schema() -> dict[str, pl.DataType]:
-    return {
+    schema = {
         "signal_name": pl.String,
         "signal_bucket": pl.String,
         "peak_date": pl.Date,
@@ -262,10 +323,18 @@ def _empty_detail_schema() -> dict[str, pl.DataType]:
         "post_peak_close_return_20d": pl.Float64,
         "post_peak_close_return_40d": pl.Float64,
     }
+    for horizon in FORWARD_HORIZONS:
+        schema[f"forward_return_{horizon}d"] = pl.Float64
+        schema[f"forward_min_close_return_{horizon}d"] = pl.Float64
+        schema[f"max_adverse_excursion_{horizon}d"] = pl.Float64
+    for threshold in DRAWDOWN_SEVERITY_THRESHOLDS:
+        for horizon in FORWARD_HORIZONS:
+            schema[f"drawdown_hit_{int(threshold * 100)}pct_{horizon}d"] = pl.Boolean
+    return schema
 
 
 def _empty_summary_schema() -> dict[str, pl.DataType]:
-    return {
+    schema = {
         "signal_name": pl.String,
         "signal_bucket": pl.String,
         "events": pl.Int64,
@@ -280,6 +349,14 @@ def _empty_summary_schema() -> dict[str, pl.DataType]:
         "median_post_peak_close_return_20d": pl.Float64,
         "median_post_peak_close_return_40d": pl.Float64,
     }
+    for horizon in FORWARD_HORIZONS:
+        schema[f"median_forward_return_{horizon}d"] = pl.Float64
+        schema[f"median_forward_min_close_return_{horizon}d"] = pl.Float64
+        schema[f"median_max_adverse_excursion_{horizon}d"] = pl.Float64
+    for threshold in DRAWDOWN_SEVERITY_THRESHOLDS:
+        for horizon in FORWARD_HORIZONS:
+            schema[f"drawdown_hit_{int(threshold * 100)}pct_{horizon}d"] = pl.Float64
+    return schema
 
 
 def _empty_detail_frame() -> pl.DataFrame:

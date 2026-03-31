@@ -18,6 +18,7 @@ RECOVERY_SIGNAL_COLUMNS = (
 
 FORWARD_HORIZONS = (5, 10, 20, 40)
 RECOVERY_HIT_THRESHOLDS = (0.10, 0.20)
+DRAWDOWN_SEVERITY_THRESHOLDS = (0.05, 0.08, 0.10)
 
 
 def build_recovery_study(
@@ -38,6 +39,7 @@ def build_recovery_study(
         return _empty_detail_frame(), _empty_summary_frame()
 
     close = ordered["close"].to_numpy()
+    low = ordered["low"].to_numpy() if "low" in ordered.columns else close
     dates = ordered["date"].to_list()
 
     detail_rows: list[dict[str, object]] = []
@@ -50,6 +52,7 @@ def build_recovery_study(
             ordered=ordered,
             events=events,
             close=close,
+            low=low,
             dates=dates,
             lookback_days=lookback_days,
             forward_horizons=forward_horizons,
@@ -82,6 +85,7 @@ def _build_signal_rows(
     ordered: pl.DataFrame,
     events: list[object],
     close: np.ndarray,
+    low: np.ndarray,
     dates: list[object],
     lookback_days: int,
     forward_horizons: tuple[int, ...],
@@ -115,12 +119,20 @@ def _build_signal_rows(
         for horizon in forward_horizons:
             row[f"forward_return_{horizon}d"] = _forward_return(close, anchor_idx, horizon)
             row[f"max_forward_return_{horizon}d"] = _max_forward_return(close, anchor_idx, horizon)
+            row[f"forward_min_close_return_{horizon}d"] = _min_forward_return(close, anchor_idx, horizon)
+            row[f"max_adverse_excursion_{horizon}d"] = _max_adverse_excursion(low, close, anchor_idx, horizon)
 
         for threshold in RECOVERY_HIT_THRESHOLDS:
             horizon = max(forward_horizons)
             row[f"hit_rate_{int(threshold * 100)}pct_{horizon}d"] = _hit_rate(
                 row[f"max_forward_return_{horizon}d"], threshold
             )
+        for threshold in DRAWDOWN_SEVERITY_THRESHOLDS:
+            for horizon in forward_horizons:
+                row[f"drawdown_hit_{int(threshold * 100)}pct_{horizon}d"] = _drawdown_hit(
+                    row[f"max_adverse_excursion_{horizon}d"],
+                    threshold,
+                )
 
         rows.append(row)
     return rows
@@ -153,16 +165,26 @@ def _summarize_recovery_signal(
                 [row[f"forward_return_{horizon}d"] for row in bucket_rows]
             )
             summary[f"win_rate_{horizon}d"] = _nan_mean(
-                [row[f"forward_return_{horizon}d"] > 0.0 for row in bucket_rows]
+                [_positive_return_hit(row[f"forward_return_{horizon}d"]) for row in bucket_rows]
             )
             summary[f"median_max_forward_return_{horizon}d"] = _nan_median(
                 [row[f"max_forward_return_{horizon}d"] for row in bucket_rows]
+            )
+            summary[f"median_forward_min_close_return_{horizon}d"] = _nan_median(
+                [row[f"forward_min_close_return_{horizon}d"] for row in bucket_rows]
+            )
+            summary[f"median_max_adverse_excursion_{horizon}d"] = _nan_median(
+                [row[f"max_adverse_excursion_{horizon}d"] for row in bucket_rows]
             )
 
         horizon = max(forward_horizons)
         for threshold in RECOVERY_HIT_THRESHOLDS:
             column = f"hit_rate_{int(threshold * 100)}pct_{horizon}d"
-            summary[column] = _nan_mean([bool(row[column]) for row in bucket_rows])
+            summary[column] = _nan_mean([_bool_to_float(row[column]) for row in bucket_rows])
+        for threshold in DRAWDOWN_SEVERITY_THRESHOLDS:
+            for horizon in forward_horizons:
+                column = f"drawdown_hit_{int(threshold * 100)}pct_{horizon}d"
+                summary[column] = _nan_mean([_bool_to_float(row[column]) for row in bucket_rows])
 
         summary_rows.append(summary)
 
@@ -219,8 +241,44 @@ def _max_forward_return(close: np.ndarray, idx: int, horizon: int) -> float:
     return float((np.max(future) / close[idx]) - 1.0)
 
 
-def _hit_rate(value: float, threshold: float) -> bool:
-    return bool(not np.isnan(value) and value >= threshold)
+def _min_forward_return(close: np.ndarray, idx: int, horizon: int) -> float:
+    future = close[idx + 1 : min(len(close), idx + horizon + 1)]
+    future = future[~np.isnan(future)]
+    if future.size == 0 or np.isnan(close[idx]):
+        return float("nan")
+    return float((np.min(future) / close[idx]) - 1.0)
+
+
+def _max_adverse_excursion(low: np.ndarray, close: np.ndarray, idx: int, horizon: int) -> float:
+    future = low[idx + 1 : min(len(low), idx + horizon + 1)]
+    future = future[~np.isnan(future)]
+    if future.size == 0 or np.isnan(close[idx]):
+        return float("nan")
+    return float((np.min(future) / close[idx]) - 1.0)
+
+
+def _hit_rate(value: float, threshold: float) -> bool | None:
+    if np.isnan(value):
+        return None
+    return bool(value >= threshold)
+
+
+def _drawdown_hit(value: float, threshold: float) -> bool | None:
+    if np.isnan(value):
+        return None
+    return bool(value <= -threshold)
+
+
+def _positive_return_hit(value: float) -> float:
+    if np.isnan(value):
+        return float("nan")
+    return float(value > 0.0)
+
+
+def _bool_to_float(value: object) -> float:
+    if value is None:
+        return float("nan")
+    return float(bool(value))
 
 
 def _nan_mean(values: list[object]) -> float | None:
@@ -270,8 +328,13 @@ def _empty_detail_schema() -> dict[str, pl.DataType]:
     for horizon in FORWARD_HORIZONS:
         schema[f"forward_return_{horizon}d"] = pl.Float64
         schema[f"max_forward_return_{horizon}d"] = pl.Float64
+        schema[f"forward_min_close_return_{horizon}d"] = pl.Float64
+        schema[f"max_adverse_excursion_{horizon}d"] = pl.Float64
     for threshold in RECOVERY_HIT_THRESHOLDS:
         schema[f"hit_rate_{int(threshold * 100)}pct_{max(FORWARD_HORIZONS)}d"] = pl.Boolean
+    for threshold in DRAWDOWN_SEVERITY_THRESHOLDS:
+        for horizon in FORWARD_HORIZONS:
+            schema[f"drawdown_hit_{int(threshold * 100)}pct_{horizon}d"] = pl.Boolean
     return schema
 
 
@@ -287,8 +350,13 @@ def _empty_summary_schema() -> dict[str, pl.DataType]:
         schema[f"median_forward_return_{horizon}d"] = pl.Float64
         schema[f"win_rate_{horizon}d"] = pl.Float64
         schema[f"median_max_forward_return_{horizon}d"] = pl.Float64
+        schema[f"median_forward_min_close_return_{horizon}d"] = pl.Float64
+        schema[f"median_max_adverse_excursion_{horizon}d"] = pl.Float64
     for threshold in RECOVERY_HIT_THRESHOLDS:
         schema[f"hit_rate_{int(threshold * 100)}pct_{max(FORWARD_HORIZONS)}d"] = pl.Float64
+    for threshold in DRAWDOWN_SEVERITY_THRESHOLDS:
+        for horizon in FORWARD_HORIZONS:
+            schema[f"drawdown_hit_{int(threshold * 100)}pct_{horizon}d"] = pl.Float64
     return schema
 
 

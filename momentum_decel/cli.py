@@ -348,7 +348,13 @@ def run_recoverystudy(args: argparse.Namespace, config: RuntimeConfig) -> None:
     detail_frame.write_parquet(config.validation_dir / "recovery_study_detail.parquet", compression="zstd")
     summary_frame.write_csv(config.validation_dir / "recovery_study_summary.csv")
     if summary_frame.height:
-        print(summary_frame.sort("median_forward_return_20d", descending=True, nulls_last=True))
+        print(
+            summary_frame.sort(
+                ["median_forward_return_20d", "drawdown_hit_8pct_20d"],
+                descending=[True, False],
+                nulls_last=True,
+            )
+        )
 
 
 def run_exhaustionstudy(args: argparse.Namespace, config: RuntimeConfig) -> None:
@@ -373,4 +379,10 @@ def run_exhaustionstudy(args: argparse.Namespace, config: RuntimeConfig) -> None
     detail_frame.write_parquet(config.validation_dir / "exhaustion_study_detail.parquet", compression="zstd")
     summary_frame.write_csv(config.validation_dir / "exhaustion_study_summary.csv")
     if summary_frame.height:
-        print(summary_frame.sort("median_lead_days", descending=True, nulls_last=True))
+        print(
+            summary_frame.sort(
+                ["drawdown_hit_8pct_40d", "median_max_adverse_excursion_20d"],
+                descending=[True, False],
+                nulls_last=True,
+            )
+        )
