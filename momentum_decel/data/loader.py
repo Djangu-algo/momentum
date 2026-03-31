@@ -40,10 +40,11 @@ class DataLoader:
         start: str | date | datetime | None = None,
         end: str | date | datetime | None = None,
         data_source: str | None = None,
+        instruments: pl.DataFrame | None = None,
     ) -> pl.DataFrame:
         source = (data_source or self.config.data_source).lower()
         if source == "postgres":
-            return self._load_prices_postgres(tickers, start, end)
+            return self._load_prices_postgres(tickers, start, end, instruments=instruments)
         if source == "yfinance":
             return self._load_prices_yfinance(tickers, start, end)
         raise ValueError(f"Unsupported data source: {source}")
@@ -53,32 +54,45 @@ class DataLoader:
         tickers: Sequence[str],
         start: str | date | datetime | None = None,
         end: str | date | datetime | None = None,
+        instruments: pl.DataFrame | None = None,
     ) -> pl.DataFrame:
         start_date = _as_date(start)
         end_date = _as_date(end)
         if end_date is not None:
             end_date = end_date + timedelta(days=1)
 
-        where_clauses = ["upper(symbol) = any(:tickers)"]
-        params = {"tickers": list(tickers)}
+        instrument_pairs = _build_instrument_pairs(tickers, instruments)
+        values_clause = ", ".join(f"(:ticker_{idx}, :exchange_{idx})" for idx, _ in enumerate(instrument_pairs))
+        where_clauses = ["1 = 1"]
+        params: dict[str, object] = {}
+        for idx, (ticker, exchange) in enumerate(instrument_pairs):
+            params[f"ticker_{idx}"] = ticker
+            params[f"exchange_{idx}"] = exchange
         if start_date is not None:
-            where_clauses.append("datetime >= :start_date")
+            where_clauses.append("p.datetime >= :start_date")
             params["start_date"] = start_date
         if end_date is not None:
-            where_clauses.append("datetime < :end_date")
+            where_clauses.append("p.datetime < :end_date")
             params["end_date"] = end_date
 
         query = text(
             f"""
+            with instruments(ticker, exchange) as (
+                values {values_clause}
+            )
             select
-                cast(datetime as date) as date,
-                upper(symbol) as ticker,
-                open,
-                high,
-                low,
-                close,
-                volume
-            from {self.config.price_table}
+                cast(p.datetime as date) as date,
+                upper(p.symbol) as ticker,
+                upper(p.exchange) as exchange,
+                p.open,
+                p.high,
+                p.low,
+                p.close,
+                p.volume
+            from {self.config.price_table} p
+            join instruments i
+              on upper(p.symbol) = i.ticker
+             and (i.exchange is null or upper(coalesce(p.exchange, '')) = i.exchange)
             where {' and '.join(where_clauses)}
             order by ticker, date
             """
@@ -201,6 +215,41 @@ def _normalize_price_frame(frame: pl.DataFrame) -> pl.DataFrame:
         pl.col("volume").cast(pl.Float64),
     ).select("date", "ticker", "open", "high", "low", "close", "volume")
     return normalized.sort(["ticker", "date"])
+
+
+def _build_instrument_pairs(tickers: Sequence[str], instruments: pl.DataFrame | None) -> list[tuple[str, str | None]]:
+    requested = [ticker.upper() for ticker in tickers]
+    exchange_by_ticker: dict[str, str | None] = {}
+    if instruments is not None and not instruments.is_empty() and "ticker" in instruments.columns:
+        available = instruments
+        if "exchange" in available.columns:
+            available = (
+                available.with_columns(
+                    pl.col("ticker").cast(pl.String).str.to_uppercase(),
+                    pl.col("exchange").cast(pl.String).str.to_uppercase(),
+                )
+                .sort(["ticker", "exchange"], nulls_last=True)
+                .unique(subset=["ticker"], keep="first", maintain_order=True)
+            )
+            exchange_by_ticker = {
+                row["ticker"]: row.get("exchange")
+                for row in available.iter_rows(named=True)
+            }
+        else:
+            exchange_by_ticker = {
+                ticker: None
+                for ticker in available["ticker"].cast(pl.String).str.to_uppercase().to_list()
+            }
+
+    pairs: list[tuple[str, str | None]] = []
+    seen: set[tuple[str, str | None]] = set()
+    for ticker in requested:
+        pair = (ticker, exchange_by_ticker.get(ticker))
+        if pair in seen:
+            continue
+        seen.add(pair)
+        pairs.append(pair)
+    return pairs
 
 
 def save_ticker_parquet(frame: pl.DataFrame, output_path: Path) -> None:

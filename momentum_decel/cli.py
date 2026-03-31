@@ -27,6 +27,11 @@ from momentum_decel.relative_strength.ratio_indicators import add_relative_stren
 from momentum_decel.utils import parse_tickers
 from momentum_decel.validation.event_study import build_event_study, build_sector_lead_lag, identify_drawdown_events
 from momentum_decel.validation.exhaustion_study import build_exhaustion_study
+from momentum_decel.validation.group_relative_severity import (
+    attach_group_relative_severity,
+    augment_summary_with_group_relative_hits,
+    build_group_relative_summary,
+)
 from momentum_decel.validation.recovery_study import build_recovery_study
 
 
@@ -114,12 +119,16 @@ def build_parser() -> argparse.ArgumentParser:
     add_common_date_options(recoverystudy)
     recoverystudy.add_argument("--tickers", nargs="*", default=list(DEFAULT_STUDY_TICKERS))
     recoverystudy.add_argument("--min-drawdown", type=float, default=5.0)
+    recoverystudy.add_argument("--group-by", default="focus", choices=GROUP_BY_CHOICES)
+    recoverystudy.add_argument("--min-group-samples", type=int, default=12)
     recoverystudy.set_defaults(func=run_recoverystudy)
 
     exhaustionstudy = subparsers.add_parser("exhaustionstudy", help="Run exhaustion study.")
     add_common_date_options(exhaustionstudy)
     exhaustionstudy.add_argument("--tickers", nargs="*", default=list(DEFAULT_STUDY_TICKERS))
     exhaustionstudy.add_argument("--min-drawdown", type=float, default=5.0)
+    exhaustionstudy.add_argument("--group-by", default="focus", choices=GROUP_BY_CHOICES)
+    exhaustionstudy.add_argument("--min-group-samples", type=int, default=12)
     exhaustionstudy.set_defaults(func=run_exhaustionstudy)
 
     return parser
@@ -158,7 +167,16 @@ def compute_for_tickers(
 ) -> pl.DataFrame:
     requested_tickers = [ticker.upper() for ticker in tickers]
     load_tickers = list(dict.fromkeys([*requested_tickers, "SPY"]))
-    prices = loader.load_prices(tickers=load_tickers, start=start, end=end, data_source=config.data_source)
+    instruments = None
+    if config.data_source == "postgres":
+        instruments = load_etf_metadata(loader, load_tickers)
+    prices = loader.load_prices(
+        tickers=load_tickers,
+        start=start,
+        end=end,
+        data_source=config.data_source,
+        instruments=instruments,
+    )
     results: list[pl.DataFrame] = []
     for ticker in load_tickers:
         ticker_prices = prices.filter(pl.col("ticker") == ticker)
@@ -345,13 +363,32 @@ def run_recoverystudy(args: argparse.Namespace, config: RuntimeConfig) -> None:
 
     detail_frame = pl.concat(detail_frames, how="diagonal") if detail_frames else pl.DataFrame(schema={"ticker": pl.String})
     summary_frame = pl.concat(summary_frames, how="diagonal") if summary_frames else pl.DataFrame(schema={"ticker": pl.String})
+    metadata = load_etf_metadata(loader, tickers)
+    detail_frame, thresholds_frame = attach_group_relative_severity(
+        detail_frame,
+        metadata,
+        group_column=args.group_by,
+        min_group_samples=args.min_group_samples,
+    )
+    summary_frame = augment_summary_with_group_relative_hits(summary_frame, detail_frame, group_column=args.group_by)
+    group_summary = build_group_relative_summary(detail_frame, group_column=args.group_by)
     detail_frame.write_parquet(config.validation_dir / "recovery_study_detail.parquet", compression="zstd")
     summary_frame.write_csv(config.validation_dir / "recovery_study_summary.csv")
+    thresholds_frame.write_csv(config.validation_dir / f"recovery_study_group_thresholds_by_{args.group_by}.csv")
+    group_summary.write_csv(config.validation_dir / f"recovery_study_group_summary_by_{args.group_by}.csv")
     if summary_frame.height:
         print(
             summary_frame.sort(
                 ["median_forward_return_20d", "drawdown_hit_8pct_20d"],
                 descending=[True, False],
+                nulls_last=True,
+            )
+        )
+    if group_summary.height:
+        print(
+            group_summary.sort(
+                ["group_relative_hit_p90_40d", "median_forward_return_20d"],
+                descending=[False, True],
                 nulls_last=True,
             )
         )
@@ -376,12 +413,31 @@ def run_exhaustionstudy(args: argparse.Namespace, config: RuntimeConfig) -> None
 
     detail_frame = pl.concat(detail_frames, how="diagonal") if detail_frames else pl.DataFrame(schema={"ticker": pl.String})
     summary_frame = pl.concat(summary_frames, how="diagonal") if summary_frames else pl.DataFrame(schema={"ticker": pl.String})
+    metadata = load_etf_metadata(loader, tickers)
+    detail_frame, thresholds_frame = attach_group_relative_severity(
+        detail_frame,
+        metadata,
+        group_column=args.group_by,
+        min_group_samples=args.min_group_samples,
+    )
+    summary_frame = augment_summary_with_group_relative_hits(summary_frame, detail_frame, group_column=args.group_by)
+    group_summary = build_group_relative_summary(detail_frame, group_column=args.group_by)
     detail_frame.write_parquet(config.validation_dir / "exhaustion_study_detail.parquet", compression="zstd")
     summary_frame.write_csv(config.validation_dir / "exhaustion_study_summary.csv")
+    thresholds_frame.write_csv(config.validation_dir / f"exhaustion_study_group_thresholds_by_{args.group_by}.csv")
+    group_summary.write_csv(config.validation_dir / f"exhaustion_study_group_summary_by_{args.group_by}.csv")
     if summary_frame.height:
         print(
             summary_frame.sort(
                 ["drawdown_hit_8pct_40d", "median_max_adverse_excursion_20d"],
+                descending=[True, False],
+                nulls_last=True,
+            )
+        )
+    if group_summary.height:
+        print(
+            group_summary.sort(
+                ["group_relative_hit_p90_40d", "median_max_adverse_excursion_20d"],
                 descending=[True, False],
                 nulls_last=True,
             )
