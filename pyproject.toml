@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "momentum-decel"
+version = "0.1.0"
+description = "Momentum deceleration detection system for SPY and SPDR sector ETFs."
+readme = "momentum_deceleration_plan_v2.md"
+requires-python = ">=3.13"
+dependencies = [
+  "numpy>=2.3",
+  "pandas>=2.2",
+  "polars>=1.30",
+  "psycopg[binary]>=3.2",
+  "pyarrow>=23.0",
+  "plotly>=6.0",
+  "rich>=14.0",
+  "scipy>=1.17",
+  "sqlalchemy>=2.0",
+  "yfinance>=0.2.65",
+  "kaleido>=1.1",
+]
+
+[project.scripts]
+momentum-decel = "momentum_decel.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["momentum_decel*"]
